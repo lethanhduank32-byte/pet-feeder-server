@@ -11,19 +11,22 @@ app.use(compression());
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true, limit: "1mb" }));
 
-// Hỗ trợ ESP32 gửi raw wav trực tiếp
-app.use("/api/stt-command-raw", express.raw({
-  type: ["audio/wav", "audio/x-wav", "application/octet-stream"],
-  limit: "2mb"
-}));
+// Ho tro ESP32 gui raw wav truc tiep
+app.use(
+  "/api/stt-command-raw",
+  express.raw({
+    type: ["audio/wav", "audio/x-wav", "application/octet-stream"],
+    limit: "2mb",
+  })
+);
 
-// Hỗ trợ cách hiện tại: multipart/form-data
+// Ho tro cach hien tai: multipart/form-data
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 2 * 1024 * 1024 }
+  limits: { fileSize: 2 * 1024 * 1024 },
 });
 
-// Cache TTS đơn giản trong RAM
+// Cache TTS don gian trong RAM
 const ttsCache = new Map();
 const TTS_CACHE_LIMIT = 50;
 
@@ -51,19 +54,81 @@ function normVN(s = "") {
   return removeVietnameseAccents(normalizeText(s));
 }
 
+function pickRandom(arr) {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+// ==============================
+// PHAN HOI TU NHIEN
+// ==============================
+const naturalReplies = {
+  feed_now: [
+    "Da cho an roi nhe",
+    "Minh vua cho an xong roi nhe",
+    "Xong roi nhe, vat nuoi da duoc cho an",
+    "Da hoan thanh cho an roi nhe",
+  ],
+  pump_on_manual: [
+    "Minh da bat bom nuoc roi nhe",
+    "Bom nuoc dang duoc bat roi nhe",
+    "Da bat bom nuoc cho ban roi",
+  ],
+  pump_off_manual: [
+    "Minh da tat bom nuoc roi nhe",
+    "Nuoc da du roi, minh tat bom nhe",
+    "Da tat bom nuoc thanh cong",
+  ],
+  disable_extra_feed_time: [
+    "Minh da xoa gio an them roi nhe",
+    "Gio an them da duoc huy roi",
+    "Da xoa lich an them cho ban",
+  ],
+  unknown: [
+    "Minh chua hieu lenh nay, ban noi lai giup minh nhe",
+    "Lenh nay minh chua ho tro, ban thu noi cach khac nhe",
+    "Minh nghe chua ro, ban noi lai giup minh nhe",
+  ],
+};
+
+function naturalMessage(action, fallback) {
+  const list = naturalReplies[action];
+  if (list && list.length > 0) return pickRandom(list);
+  return fallback || "Da thuc hien lenh";
+}
+
+function buildExtraFeedTimeMessage(hour, minute) {
+  const mm = String(minute).padStart(2, "0");
+  const options = [
+    `Minh da dat gio an them luc ${hour} gio ${mm} phut roi nhe`,
+    `Da luu gio an them la ${hour} gio ${mm} phut`,
+    `Xong roi nhe, minh da hen gio an them luc ${hour} gio ${mm} phut`,
+  ];
+  return pickRandom(options);
+}
+
+// ==============================
+// PHAN TICH LENH TIENG VIET
+// ==============================
 function parseVietnameseCommand(text) {
   const raw = normalizeText(text);
   const t = normVN(text);
 
   if (!t) {
-    return { ok: false, action: "none", message: "Khong nghe ro lenh" };
+    return {
+      ok: false,
+      action: "none",
+      message: "Minh nghe chua ro, ban noi lai giup minh nhe",
+    };
   }
 
   if (t.includes("xoa gio an them")) {
     return {
       ok: true,
       action: "disable_extra_feed_time",
-      message: "Da xoa gio an them"
+      message: naturalMessage(
+        "disable_extra_feed_time",
+        "Da xoa gio an them"
+      ),
     };
   }
 
@@ -76,15 +141,15 @@ function parseVietnameseCommand(text) {
       return {
         ok: true,
         action: "set_extra_feed_time",
-        message: `Da dat gio an them ${hour} gio ${minute} phut`,
-        params: { hour, minute }
+        message: buildExtraFeedTimeMessage(hour, minute),
+        params: { hour, minute },
       };
     }
 
     return {
       ok: false,
       action: "none",
-      message: "Gio an them khong hop le"
+      message: "Gio an them chua hop le, ban thu lai nhe",
     };
   }
 
@@ -92,7 +157,7 @@ function parseVietnameseCommand(text) {
     return {
       ok: true,
       action: "pump_on_manual",
-      message: "Da bat bom nuoc"
+      message: naturalMessage("pump_on_manual", "Da bat bom nuoc"),
     };
   }
 
@@ -100,7 +165,7 @@ function parseVietnameseCommand(text) {
     return {
       ok: true,
       action: "pump_off_manual",
-      message: "Da tat bom nuoc"
+      message: naturalMessage("pump_off_manual", "Da tat bom nuoc"),
     };
   }
 
@@ -108,53 +173,62 @@ function parseVietnameseCommand(text) {
     return {
       ok: true,
       action: "feed_now",
-      message: "Da cho an"
+      message: naturalMessage("feed_now", "Da cho an"),
     };
   }
 
   return {
     ok: false,
     action: "none",
-    message: `Lenh chua duoc ho tro: ${raw}`
+    message: naturalMessage("unknown"),
   };
 }
 
-// Trang goc
+// ==============================
+// ROUTES CO BAN
+// ==============================
 app.get("/", (req, res) => {
   res.type("text/plain").send("pet-feeder-server OK");
 });
 
-// Health check cho Render
 app.get("/healthz", (req, res) => {
   res.status(200).json({
     ok: true,
     service: "pet-feeder-server",
     uptime_sec: Math.round(process.uptime()),
-    now: new Date().toISOString()
+    now: new Date().toISOString(),
   });
 });
 
-// Ping giu service am
 app.get("/ping", (req, res) => {
   res.status(200).send("pong");
 });
 
-// STT demo / fallback
-// Tạm thời để test toàn bộ luồng trước.
-// Sau này bạn thay bằng STT thật.
+// ==============================
+// STT DEMO / FALLBACK
+// Hien tai de test luong ESP32 -> server -> JSON
+// Ban co the doi tam dong return de test cac lenh khac nhau
+// ==============================
 async function speechToTextFromBuffer(buffer) {
   if (!buffer || !buffer.length) return "";
+
+  // DOI DONG DUOI NEU MUON TEST LENH KHAC:
+  // return "bat bom nuoc";
+  // return "tat bom nuoc";
+  // return "cho an them 9 gio 20 phut";
+  // return "xoa gio an them";
+
   return "cho an";
 }
 
-// API đang khớp với ESP32 hiện tại của bạn: multipart/form-data
+// API dang khop voi ESP32 hien tai: multipart/form-data
 app.post("/api/stt-command", upload.single("audio"), async (req, res) => {
   try {
     if (!req.file || !req.file.buffer) {
       return res.status(400).json({
         ok: false,
         action: "none",
-        message: "Thieu file audio"
+        message: "Thieu file audio",
       });
     }
 
@@ -163,14 +237,14 @@ app.post("/api/stt-command", upload.single("audio"), async (req, res) => {
 
     return res.json({
       ...result,
-      transcript_raw: transcript
+      transcript_raw: transcript,
     });
   } catch (err) {
     console.error("STT multipart error:", err);
     return res.status(500).json({
       ok: false,
       action: "none",
-      message: "Loi xu ly giong noi"
+      message: "Loi xu ly giong noi",
     });
   }
 });
@@ -182,7 +256,7 @@ app.post("/api/stt-command-raw", async (req, res) => {
       return res.status(400).json({
         ok: false,
         action: "none",
-        message: "Thieu du lieu audio"
+        message: "Thieu du lieu audio",
       });
     }
 
@@ -191,14 +265,14 @@ app.post("/api/stt-command-raw", async (req, res) => {
 
     return res.json({
       ...result,
-      transcript_raw: transcript
+      transcript_raw: transcript,
     });
   } catch (err) {
     console.error("STT raw error:", err);
     return res.status(500).json({
       ok: false,
       action: "none",
-      message: "Loi xu ly audio raw"
+      message: "Loi xu ly audio raw",
     });
   }
 });
